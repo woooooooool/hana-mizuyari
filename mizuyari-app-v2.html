@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>水やり当番</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@500;700&family=Noto+Sans+JP:wght@400;500;700&display=swap');
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #F5F2E8; overflow-x: hidden; max-width: 100vw; }
+  select:focus, input:focus, button:focus-visible { outline: 2px solid #3F6B4F; outline-offset: 1px; }
+  button { font-family: 'Noto Sans JP', sans-serif; }
+  #error-box { display:none; padding:16px; margin:14px; background:#fff; border:1px solid #C1554B; border-radius:12px; color:#2B3328; font-family: sans-serif; font-size: 13px; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<div id="root">
+  <div style="padding:24px;text-align:center;color:#6E7A68;font-family:sans-serif;">読み込み中…</div>
+</div>
+<div id="error-box"></div>
+
+<script>
+  window.addEventListener('error', function (e) {
+    var box = document.getElementById('error-box');
+    box.style.display = 'block';
+    box.textContent = '読み込みエラーが発生しました:\n' + (e.message || e.error);
+  });
+</script>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+<script type="module">
+import htm from 'https://unpkg.com/htm@3.1.1?module';
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-app.js";
+import { getFirestore, doc, onSnapshot, setDoc, updateDoc, deleteField } from "https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore.js";
+
+const html = htm.bind(React.createElement);
+const { useState, useMemo, useEffect } = React;
+
+const firebaseConfig = {
+  apiKey: "AIzaSyDCv300Ey-iiY588oP7dginm6jUaUXj4UM",
+  authDomain: "hana-mizuyari.firebaseapp.com",
+  projectId: "hana-mizuyari",
+  storageBucket: "hana-mizuyari.firebasestorage.app",
+  messagingSenderId: "17770897337",
+  appId: "1:17770897337:web:b54893d10e1ce268b92068"
+};
+const fbApp = initializeApp(firebaseConfig);
+const db = getFirestore(fbApp);
+const stateRef = doc(db, "mizuyari", "state");
+
+const COLORS = {
+  bg: "#F5F2E8", card: "#FFFFFF", ink: "#2B3328", inkMuted: "#6E7A68",
+  border: "#E1DBC8", green: "#A9D6BA", greenText: "#4A7C59", greenSoft: "#E4F1E8",
+  blue: "#5C88B4", orangeSoft: "#F5E6D3", orange: "#D98A46",
+  saturday: "#5C88B4", sunday: "#C1554B",
+};
+const STATUS_COLOR = { NORMAL: COLORS.green, RAIN_DELAY: COLORS.blue, SUBSTITUTE: COLORS.orange };
+const ROLE_LABEL = { NORMAL: "通常", DAY: "デイ", RECEPTION: "受付", PSYCHOLOGIST: "心理士", DOCTOR: "Dr." };
+const ROLE_COLOR = { NORMAL: COLORS.green, DAY: "#F5DE8A", RECEPTION: "#F5C6D6", PSYCHOLOGIST: "#B8D8F0", DOCTOR: "#F3B3AE" };
+const ROLE_OPTIONS = ["NORMAL", "DAY", "RECEPTION", "PSYCHOLOGIST", "DOCTOR"];
+const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"];
+
+function pad(n) { return String(n).padStart(2, "0"); }
+function dateKey(d) { return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()); }
+function formatMD(d) { return (d.getMonth() + 1) + "/" + d.getDate(); }
+function addMonthsToAnchor(y, m, delta) {
+  let total = y * 12 + m + delta;
+  const ny = Math.floor(total / 12);
+  const nm = ((total % 12) + 12) % 12;
+  return { y: ny, m: nm };
+}
+function computeInitialAnchor() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  if (now.getDate() >= 21) return addMonthsToAnchor(y, m, 1);
+  return { y, m };
+}
+function periodRange(anchorY, anchorM) {
+  const endStart = addMonthsToAnchor(anchorY, anchorM, -1);
+  const start = new Date(endStart.y, endStart.m, 21);
+  const end = new Date(anchorY, anchorM, 20);
+  return { start, end };
+}
+function buildDateList(start, end) {
+  const list = [];
+  let cur = new Date(start);
+  while (cur <= end) { list.push(new Date(cur)); cur.setDate(cur.getDate() + 1); }
+  return list;
+}
+function defaultStaffIndex(d) {
+  const dayOfYear = Math.floor((d - new Date(d.getFullYear(), 0, 0)) / 86400000);
+  return dayOfYear % 4;
+}
+
+const INITIAL_STAFF = [
+  { id: "s1", name: "田中", role: "NORMAL" },
+  { id: "s2", name: "佐藤", role: "NORMAL" },
+  { id: "s3", name: "鈴木", role: "NORMAL" },
+  { id: "s4", name: "高橋", role: "NORMAL" },
+  { id: "dr", name: "Dr.", role: "DOCTOR" },
+];
+const ROTATION = ["s1", "s2", "s3", "s4"];
+
+function WateringApp() {
+  const [anchor, setAnchor] = useState(computeInitialAnchor());
+  const { start, end } = useMemo(() => periodRange(anchor.y, anchor.m), [anchor]);
+  const dates = useMemo(() => buildDateList(start, end), [start, end]);
+
+  const [loading, setLoading] = useState(true);
+  const [schedules, setSchedules] = useState({});
+  const [records, setRecords] = useState({});
+  const [staffList, setStaffList] = useState(INITIAL_STAFF);
+  const [staffOpen, setStaffOpen] = useState(false);
+  const [newStaffName, setNewStaffName] = useState("");
+  const [newStaffRole, setNewStaffRole] = useState("NORMAL");
+  const [photoPreview, setPhotoPreview] = useState(null);
+  const [redDaysInput, setRedDaysInput] = useState("");
+  const [redDays, setRedDays] = useState([]);
+  const [nameDraft, setNameDraft] = useState({});
+
+  useEffect(() => {
+    const unsub = onSnapshot(stateRef, (snap) => {
+      if (snap.exists()) {
+        const data = snap.data();
+        setStaffList(data.staffList && data.staffList.length ? data.staffList : INITIAL_STAFF);
+        setSchedules(data.schedules || {});
+        setRecords(data.records || {});
+      } else {
+        setDoc(stateRef, { staffList: INITIAL_STAFF, schedules: {}, records: {} });
+      }
+      setLoading(false);
+    }, (err) => {
+      setLoading(false);
+      const box = document.getElementById('error-box');
+      box.style.display = 'block';
+      box.textContent = 'データの読み込みに失敗しました:\n' + err;
+    });
+    return () => unsub();
+  }, []);
+
+  function handlePhotoSelect(e) {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => setPhotoPreview(reader.result);
+    reader.readAsDataURL(file);
+  }
+  function applyRedDays() {
+    const nums = redDaysInput.split(/[,、\s]+/).map((s) => parseInt(s, 10)).filter((n) => !isNaN(n));
+    setRedDays(nums);
+  }
+
+  const staffMap = useMemo(() => {
+    const m = {};
+    staffList.forEach((s) => (m[s.id] = s));
+    return m;
+  }, [staffList]);
+
+  function getScheduleStaffId(d) {
+    const key = dateKey(d);
+    if (schedules[key] !== undefined) return schedules[key];
+    return ROTATION[defaultStaffIndex(d)];
+  }
+  function setSchedule(d, staffId) {
+    updateDoc(stateRef, { ["schedules." + dateKey(d)]: staffId });
+  }
+  function setRecord(d, staffId, status) {
+    updateDoc(stateRef, { ["records." + dateKey(d)]: { staffId: staffId, status: status } });
+  }
+  function clearRecord(d) {
+    updateDoc(stateRef, { ["records." + dateKey(d)]: deleteField() });
+  }
+  function staffOptionLabel(staff) {
+    if (!staff) return "";
+    return staff.role === "DOCTOR" ? ("🩺 " + staff.name) : staff.name;
+  }
+  function handleExecutorChange(d, value) {
+    if (value === "") { clearRecord(d); return; }
+    if (value === "RAIN") { setRecord(d, null, "RAIN_DELAY"); return; }
+    const sched = getScheduleStaffId(d);
+    const status = value === sched ? "NORMAL" : "SUBSTITUTE";
+    setRecord(d, value, status);
+  }
+  function executorValue(d) {
+    const rec = records[dateKey(d)];
+    if (!rec) return "";
+    if (rec.status === "RAIN_DELAY") return "RAIN";
+    return rec.staffId || "";
+  }
+  function eventIcon(d) {
+    const rec = records[dateKey(d)];
+    if (!rec) return null;
+    if (rec.status === "RAIN_DELAY") return "rain";
+    if (rec.staffId) return "done";
+    return null;
+  }
+
+  const today = new Date();
+  const todayKey = dateKey(today);
+  const todayInPeriod = dates.find((d) => dateKey(d) === todayKey);
+
+  const counts = useMemo(() => {
+    const c = {};
+    staffList.forEach((s) => (c[s.id] = 0));
+    dates.forEach((d) => {
+      const rec = records[dateKey(d)];
+      if (rec && rec.staffId) c[rec.staffId] = (c[rec.staffId] || 0) + 1;
+    });
+    return c;
+  }, [records, dates, staffList]);
+
+  const sortedCounts = useMemo(() => {
+    return staffList.map((s) => Object.assign({}, s, { count: counts[s.id] || 0 }))
+      .filter((s) => s.count > 0).sort((a, b) => b.count - a.count);
+  }, [counts, staffList]);
+
+  const recordedCount = dates.filter((d) => records[dateKey(d)]).length;
+  const leafRatio = dates.length ? recordedCount / dates.length : 0;
+  const leafCount = Math.min(5, Math.max(1, Math.round(leafRatio * 5) || 1));
+
+  function goPrev() { setAnchor((a) => addMonthsToAnchor(a.y, a.m, -1)); }
+  function goNext() { setAnchor((a) => addMonthsToAnchor(a.y, a.m, 1)); }
+  function goToday() { setAnchor(computeInitialAnchor()); }
+
+  function addStaff() {
+    const name = newStaffName.trim();
+    if (!name) return;
+    const id = "s" + Date.now();
+    const next = staffList.concat([{ id: id, name: name, role: newStaffRole }]);
+    updateDoc(stateRef, { staffList: next });
+    setNewStaffName(""); setNewStaffRole("NORMAL");
+  }
+  function removeStaff(id) {
+    const next = staffList.filter((s) => s.id !== id);
+    updateDoc(stateRef, { staffList: next });
+  }
+  function commitRename(id, name) {
+    const next = staffList.map((s) => (s.id === id ? Object.assign({}, s, { name: name }) : s));
+    updateDoc(stateRef, { staffList: next });
+    setNameDraft((prev) => { const c = Object.assign({}, prev); delete c[id]; return c; });
+  }
+  function setStaffRole(id, role) {
+    const next = staffList.map((s) => (s.id === id ? Object.assign({}, s, { role: role }) : s));
+    updateDoc(stateRef, { staffList: next });
+  }
+
+  const selectStyle = {
+    fontFamily: "'Noto Sans JP', sans-serif", fontSize: 14, padding: "9px 4px",
+    borderRadius: 10, border: "1px solid " + COLORS.border, background: "#FFFFFF",
+    color: COLORS.ink, minHeight: 44, width: "100%", minWidth: 0, maxWidth: "100%",
+    boxSizing: "border-box", cursor: "pointer",
+  };
+
+  if (loading) {
+    return html`<div style=${{ padding: 40, textAlign: "center", color: COLORS.inkMuted, fontFamily: "'Noto Sans JP', sans-serif" }}>🌱 読み込み中…</div>`;
+  }
+
+  return html`
+    <div style=${{ background: COLORS.bg, minHeight: "100vh", padding: "20px 14px 40px", fontFamily: "'Noto Sans JP', sans-serif", color: COLORS.ink }}>
+      <div style=${{ maxWidth: 720, margin: "0 auto" }}>
+
+        <div style=${{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+          <div style=${{ display: "flex", alignItems: "center", gap: 10 }}>
+            <div style=${{ width: 42, height: 42, borderRadius: 12, background: COLORS.green, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20 }}>🌿</div>
+            <div>
+              <div style=${{ fontFamily: "'Zen Maru Gothic', sans-serif", fontWeight: 700, fontSize: 20, lineHeight: 1.1 }}>水やり当番</div>
+              <div style=${{ fontSize: 12.5, color: COLORS.inkMuted }}>職場のお花、今日は誰の番？</div>
+            </div>
+          </div>
+          <div style=${{ fontSize: 16, letterSpacing: 1 }} title="この期間の実施状況">
+            ${"🌿".repeat(leafCount)}<span style=${{ opacity: 0.25 }}>${"🌱".repeat(5 - leafCount)}</span>
+          </div>
+        </div>
+
+        <div style=${{ display: "flex", alignItems: "center", justifyContent: "space-between", background: COLORS.card, border: "1px solid " + COLORS.border, borderRadius: 14, padding: "8px 10px", marginBottom: 14 }}>
+          <button onClick=${goPrev} aria-label="前の期間" style=${{ width: 44, height: 44, borderRadius: 10, border: "1px solid " + COLORS.border, background: "#fff", fontSize: 18, color: COLORS.greenText, cursor: "pointer" }}>‹</button>
+          <div style=${{ textAlign: "center" }}>
+            <div style=${{ fontFamily: "'Zen Maru Gothic', sans-serif", fontWeight: 700, fontSize: 16 }}>${formatMD(start)} 〜 ${formatMD(end)}</div>
+            ${!todayInPeriod && html`<button onClick=${goToday} style=${{ marginTop: 2, fontSize: 12, color: COLORS.greenText, background: "none", border: "none", textDecoration: "underline", cursor: "pointer", padding: 0 }}>今日の期間に戻る</button>`}
+          </div>
+          <button onClick=${goNext} aria-label="次の期間" style=${{ width: 44, height: 44, borderRadius: 10, border: "1px solid " + COLORS.border, background: "#fff", fontSize: 18, color: COLORS.greenText, cursor: "pointer" }}>›</button>
+        </div>
+
+        <div style=${{ background: COLORS.card, border: "1px solid " + COLORS.border, borderRadius: 14, padding: "12px 14px", marginBottom: 14 }}>
+          <div style=${{ fontSize: 13, fontWeight: 700, marginBottom: 8, fontFamily: "'Zen Maru Gothic', sans-serif" }}>📷 紙カレンダーの写真から赤字日付を取り込む</div>
+          <input type="file" accept="image/*" capture="environment" onChange=${handlePhotoSelect} style=${{ fontSize: 12.5, width: "100%", marginBottom: 8 }} />
+          ${photoPreview && html`<img src=${photoPreview} style=${{ maxWidth: "100%", borderRadius: 8, marginBottom: 8, display: "block" }} />`}
+          <div style=${{ fontSize: 11.5, color: COLORS.inkMuted, marginBottom: 6 }}>
+            自動検出はまだ未接続です。写真を見て、赤字になっている日にちを下に入力してください（例: 3, 7, 15）
+          </div>
+          <div style=${{ display: "flex", gap: 6 }}>
+            <input value=${redDaysInput} onChange=${(e) => setRedDaysInput(e.target.value)} placeholder="例: 3, 7, 15" style=${{ flex: 1, fontSize: 14, padding: "8px 10px", borderRadius: 8, border: "1px solid " + COLORS.border, minWidth: 0 }} />
+            <button onClick=${applyRedDays} style=${{ padding: "8px 14px", borderRadius: 8, border: "none", background: COLORS.green, color: COLORS.greenText, fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>反映</button>
+          </div>
+          ${redDays.length > 0 && html`<div style=${{ fontSize: 12, color: COLORS.sunday, marginTop: 6 }}>🔴 ${redDays.join("日, ")}日 を日付欄に反映しました</div>`}
+        </div>
+
+        ${todayInPeriod && html`
+          <div style=${{ background: "linear-gradient(135deg, " + COLORS.greenSoft + ", #EFF5EA)", border: "1px solid " + COLORS.green + "22", borderRadius: 16, padding: "14px 16px", marginBottom: 16 }}>
+            <div style=${{ fontSize: 12.5, color: COLORS.greenText, fontWeight: 700 }}>きょう ${formatMD(today)}（${WEEKDAYS[today.getDay()]}）の当番</div>
+            <div style=${{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
+              <span style=${{ fontFamily: "'Zen Maru Gothic', sans-serif", fontWeight: 700, fontSize: 22, padding: "4px 14px", borderRadius: 999, background: ROLE_COLOR[(staffMap[getScheduleStaffId(todayInPeriod)] || {}).role] || COLORS.green }}>
+                ${staffOptionLabel(staffMap[getScheduleStaffId(todayInPeriod)])}
+              </span>
+              <span style=${{ fontSize: 14, fontWeight: 500 }}>さんの番です</span>
+            </div>
+          </div>
+        `}
+
+        <div style=${{ background: COLORS.card, border: "1px solid " + COLORS.border, borderRadius: 16, overflow: "hidden", marginBottom: 16 }}>
+          <div style=${{ display: "grid", gridTemplateColumns: "44px 1fr 1fr", gap: 4, padding: "8px 8px", fontSize: 11, color: COLORS.inkMuted, borderBottom: "1px solid " + COLORS.border, background: "#FBFAF5" }}>
+            <div>日付</div><div>予定者</div><div>実施者</div>
+          </div>
+          ${dates.map((d) => {
+            const key = dateKey(d);
+            const isToday = key === todayKey;
+            const wd = d.getDay();
+            const wdColor = wd === 0 ? COLORS.sunday : wd === 6 ? COLORS.saturday : COLORS.ink;
+            const rec = records[key];
+            const barColor = rec ? STATUS_COLOR[rec.status] : "transparent";
+            const icon = eventIcon(d);
+            const isRedFlagged = redDays.includes(d.getDate());
+            return html`
+              <div key=${key} style=${{ display: "grid", gridTemplateColumns: "44px 1fr 1fr", gap: 4, alignItems: "center", padding: "8px 8px", borderBottom: "1px solid " + COLORS.border, borderLeft: "4px solid " + barColor, background: isToday ? "#F7FBF6" : "#fff" }}>
+                <div style=${{ fontSize: 12.5, color: isRedFlagged ? COLORS.sunday : wdColor, fontWeight: (isToday || isRedFlagged) ? 700 : 400, minWidth: 0 }}>
+                  ${isRedFlagged ? "🔴" : ""}${formatMD(d)}
+                  <div style=${{ fontSize: 10, color: COLORS.inkMuted }}>(${WEEKDAYS[wd]})</div>
+                  ${icon === "done" ? html`<div style=${{ fontSize: 12, marginTop: 2 }}>🪻🌻🌷</div>` : ""}
+                  ${icon === "rain" ? html`<div style=${{ fontSize: 13, marginTop: 2 }}>☔</div>` : ""}
+                </div>
+                <select style=${selectStyle} value=${getScheduleStaffId(d)} onChange=${(e) => setSchedule(d, e.target.value)}>
+                  ${staffList.map((s) => html`<option key=${s.id} value=${s.id}>${staffOptionLabel(s)}</option>`)}
+                </select>
+                <select style=${selectStyle} value=${executorValue(d)} onChange=${(e) => handleExecutorChange(d, e.target.value)}>
+                  <option value="">（未実施）</option>
+                  ${staffList.map((s) => html`<option key=${s.id} value=${s.id}>${staffOptionLabel(s)}</option>`)}
+                  <option value="RAIN">☔ 雨延期</option>
+                </select>
+              </div>
+            `;
+          })}
+        </div>
+
+        <div style=${{ background: COLORS.card, border: "1px solid " + COLORS.border, borderRadius: 16, padding: "14px 16px", marginBottom: 16 }}>
+          <div style=${{ fontFamily: "'Zen Maru Gothic', sans-serif", fontWeight: 700, fontSize: 15, marginBottom: 10 }}>この期間の担当回数</div>
+          ${sortedCounts.length === 0
+            ? html`<div style=${{ fontSize: 13.5, color: COLORS.inkMuted }}>まだ記録がありません</div>`
+            : html`<div style=${{ display: "flex", flexDirection: "column", gap: 8 }}>
+                ${sortedCounts.map((s) => html`
+                  <div key=${s.id} style=${{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style=${{ width: 88, fontSize: 14 }}>${s.role === "DOCTOR" ? "🩺 Dr." : (s.name + "さん")}</div>
+                    <div style=${{ flex: 1, height: 10, borderRadius: 6, background: COLORS.greenSoft, overflow: "hidden" }}>
+                      <div style=${{ width: Math.min(100, (s.count / (sortedCounts[0].count || 1)) * 100) + "%", height: "100%", background: ROLE_COLOR[s.role] || COLORS.green }}></div>
+                    </div>
+                    <div style=${{ fontSize: 13.5, fontWeight: 700, width: 40, textAlign: "right" }}>${s.count}回</div>
+                  </div>
+                `)}
+              </div>`
+          }
+        </div>
+
+        <div style=${{ background: COLORS.card, border: "1px solid " + COLORS.border, borderRadius: 16, overflow: "hidden" }}>
+          <button onClick=${() => setStaffOpen((v) => !v)} style=${{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", background: "none", border: "none", cursor: "pointer", fontSize: 15, fontWeight: 700, fontFamily: "'Zen Maru Gothic', sans-serif", color: COLORS.ink }}>
+            <span>職員管理</span> <span>${staffOpen ? "▲" : "▼"}</span>
+          </button>
+          ${staffOpen && html`
+            <div style=${{ padding: "0 16px 16px" }}>
+              ${staffList.map((s) => html`
+                <div key=${s.id} style=${{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid " + COLORS.border }}>
+                  <input
+                    value=${nameDraft[s.id] !== undefined ? nameDraft[s.id] : s.name}
+                    onChange=${(e) => setNameDraft((prev) => Object.assign({}, prev, { [s.id]: e.target.value }))}
+                    onBlur=${(e) => commitRename(s.id, e.target.value.trim() || s.name)}
+                    style=${{ flex: 1, minWidth: 0, boxSizing: "border-box", fontSize: 14.5, padding: "8px 10px", borderRadius: 8, border: "1px solid " + COLORS.border, minHeight: 40 }} />
+                  <select value=${s.role} onChange=${(e) => setStaffRole(s.id, e.target.value)} style=${{ flexShrink: 0, fontSize: 12, padding: "8px 4px", borderRadius: 8, border: "1px solid " + COLORS.border, background: ROLE_COLOR[s.role] || "#fff", color: COLORS.ink, cursor: "pointer" }}>
+                    ${ROLE_OPTIONS.map((r) => html`<option key=${r} value=${r}>${ROLE_LABEL[r]}</option>`)}
+                  </select>
+                  <button onClick=${() => removeStaff(s.id)} aria-label="削除" style=${{ flexShrink: 0, width: 40, height: 40, borderRadius: 8, border: "1px solid " + COLORS.border, background: "#fff", cursor: "pointer", color: COLORS.sunday, fontSize: 16 }}>🗑</button>
+                </div>
+              `)}
+              <div style=${{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
+                <input placeholder="新しい職員名" value=${newStaffName} onChange=${(e) => setNewStaffName(e.target.value)} style=${{ width: "100%", boxSizing: "border-box", fontSize: 14.5, padding: "8px 10px", borderRadius: 8, border: "1px solid " + COLORS.border, minHeight: 40, minWidth: 0 }} />
+                <div style=${{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <select value=${newStaffRole} onChange=${(e) => setNewStaffRole(e.target.value)} style=${{ fontSize: 13, padding: "8px 6px", borderRadius: 8, border: "1px solid " + COLORS.border, background: ROLE_COLOR[newStaffRole], color: COLORS.ink, cursor: "pointer" }}>
+                    ${ROLE_OPTIONS.map((r) => html`<option key=${r} value=${r}>${ROLE_LABEL[r]}</option>`)}
+                  </select>
+                  <button onClick=${addStaff} style=${{ marginLeft: "auto", flexShrink: 0, padding: "8px 16px", borderRadius: 8, border: "none", background: COLORS.green, color: COLORS.greenText, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>＋ 追加</button>
+                </div>
+              </div>
+            </div>
+          `}
+        </div>
+
+      </div>
+    </div>
+  `;
+}
+
+try {
+  ReactDOM.createRoot(document.getElementById("root")).render(html`<${WateringApp} />`);
+} catch (err) {
+  const box = document.getElementById('error-box');
+  box.style.display = 'block';
+  box.textContent = '描画エラー:\n' + err;
+}
+</script>
+</body>
+</html>
