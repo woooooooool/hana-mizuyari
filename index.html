@@ -104,6 +104,15 @@ const INITIAL_STAFF = [
 ];
 const ROTATION = ["s1", "s2", "s3", "s4"];
 
+function reportWriteError(err) {
+  const box = document.getElementById('error-box');
+  box.style.display = 'block';
+  box.textContent = '保存に失敗しました（他の端末に反映されていない可能性があります）:\n' + err;
+}
+function writeState(promise) {
+  return promise.catch(reportWriteError);
+}
+
 function WateringApp() {
   const [anchor, setAnchor] = useState(computeInitialAnchor());
   const { start, end } = useMemo(() => periodRange(anchor.y, anchor.m), [anchor]);
@@ -134,7 +143,7 @@ function WateringApp() {
         setSchedules(data.schedules || {});
         setRecords(data.records || {});
       } else {
-        setDoc(stateRef, { staffList: INITIAL_STAFF, schedules: {}, records: {} });
+        writeState(setDoc(stateRef, { staffList: INITIAL_STAFF, schedules: {}, records: {} }));
       }
       setLoading(false);
     }, (err) => {
@@ -164,16 +173,16 @@ function WateringApp() {
     return ROTATION[defaultStaffIndex(d)];
   }
   function setSchedule(d, staffId) {
-    updateDoc(stateRef, { ["schedules." + dateKey(d)]: staffId });
+    writeState(updateDoc(stateRef, { ["schedules." + dateKey(d)]: staffId }));
   }
   function setRecord(d, staffId, status) {
-    updateDoc(stateRef, { ["records." + dateKey(d)]: { staffId: staffId, status: status } });
+    writeState(updateDoc(stateRef, { ["records." + dateKey(d)]: { staffId: staffId, status: status } }));
   }
   function clearRecord(d) {
-    updateDoc(stateRef, { ["records." + dateKey(d)]: deleteField() });
+    writeState(updateDoc(stateRef, { ["records." + dateKey(d)]: deleteField() }));
   }
   function staffOptionLabel(staff) {
-    if (!staff) return "";
+    if (!staff) return "未定";
     return staff.role === "DOCTOR" ? ("🩺 " + staff.name) : staff.name;
   }
   function handleExecutorChange(d, value) {
@@ -229,21 +238,21 @@ function WateringApp() {
     if (!name) return;
     const id = "s" + Date.now();
     const next = staffList.concat([{ id: id, name: name, role: newStaffRole }]);
-    updateDoc(stateRef, { staffList: next });
+    writeState(updateDoc(stateRef, { staffList: next }));
     setNewStaffName(""); setNewStaffRole("NORMAL");
   }
   function removeStaff(id) {
     const next = staffList.filter((s) => s.id !== id);
-    updateDoc(stateRef, { staffList: next });
+    writeState(updateDoc(stateRef, { staffList: next }));
   }
   function commitRename(id, name) {
     const next = staffList.map((s) => (s.id === id ? Object.assign({}, s, { name: name }) : s));
-    updateDoc(stateRef, { staffList: next });
+    writeState(updateDoc(stateRef, { staffList: next }));
     setNameDraft((prev) => { const c = Object.assign({}, prev); delete c[id]; return c; });
   }
   function setStaffRole(id, role) {
     const next = staffList.map((s) => (s.id === id ? Object.assign({}, s, { role: role }) : s));
-    updateDoc(stateRef, { staffList: next });
+    writeState(updateDoc(stateRef, { staffList: next }));
   }
 
   const selectStyle = {
@@ -298,10 +307,10 @@ function WateringApp() {
           <div style=${{ background: "linear-gradient(135deg, " + COLORS.greenSoft + ", #EFF5EA)", border: "1px solid " + COLORS.green + "22", borderRadius: 16, padding: "14px 16px", marginBottom: 16 }}>
             <div style=${{ fontSize: 12.5, color: COLORS.greenText, fontWeight: 700 }}>きょう ${formatMD(today)}（${WEEKDAYS[today.getDay()]}）の当番</div>
             <div style=${{ display: "flex", alignItems: "baseline", gap: 6, marginTop: 6, flexWrap: "wrap" }}>
-              <span style=${{ fontFamily: "'Zen Maru Gothic', sans-serif", fontWeight: 700, fontSize: 22, padding: "4px 14px", borderRadius: 999, background: ROLE_COLOR[(staffMap[getScheduleStaffId(todayInPeriod)] || {}).role] || COLORS.green }}>
+              <span style=${{ fontFamily: "'Zen Maru Gothic', sans-serif", fontWeight: 700, fontSize: 22, padding: "4px 14px", borderRadius: 999, background: getScheduleStaffId(todayInPeriod) === "" ? COLORS.border : (ROLE_COLOR[(staffMap[getScheduleStaffId(todayInPeriod)] || {}).role] || COLORS.green) }}>
                 ${staffOptionLabel(staffMap[getScheduleStaffId(todayInPeriod)])}
               </span>
-              <span style=${{ fontSize: 14, fontWeight: 500 }}>さんの番です</span>
+              ${getScheduleStaffId(todayInPeriod) !== "" && html`<span style=${{ fontSize: 14, fontWeight: 500 }}>さんの番です</span>`}
             </div>
           </div>
         `}
@@ -327,6 +336,7 @@ function WateringApp() {
                   ${icon === "rain" ? html`<div style=${{ fontSize: 13, marginTop: 2 }}>☔</div>` : ""}
                 </div>
                 <select style=${selectStyle} value=${getScheduleStaffId(d)} onChange=${(e) => setSchedule(d, e.target.value)}>
+                  <option value="">未定</option>
                   ${staffList.map((s) => html`<option key=${s.id} value=${s.id}>${staffOptionLabel(s)}</option>`)}
                 </select>
                 <select style=${selectStyle} value=${executorValue(d)} onChange=${(e) => handleExecutorChange(d, e.target.value)}>
