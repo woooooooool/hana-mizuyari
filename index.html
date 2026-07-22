@@ -116,7 +116,6 @@ function WateringApp() {
   const [staffOpen, setStaffOpen] = useState(false);
   const [newStaffName, setNewStaffName] = useState("");
   const [newStaffRole, setNewStaffRole] = useState("NORMAL");
-  const [photoPreview, setPhotoPreview] = useState(null);
   const [redDaysInput, setRedDaysInput] = useState("");
   const [redDays, setRedDays] = useState([]);
   const [nameDraft, setNameDraft] = useState({});
@@ -141,13 +140,6 @@ function WateringApp() {
     return () => unsub();
   }, []);
 
-  function handlePhotoSelect(e) {
-    const file = e.target.files && e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => setPhotoPreview(reader.result);
-    reader.readAsDataURL(file);
-  }
   function applyRedDays() {
     const nums = redDaysInput.split(/[,、\s]+/).map((s) => parseInt(s, 10)).filter((n) => !isNaN(n));
     setRedDays(nums);
@@ -285,17 +277,14 @@ function WateringApp() {
         </div>
 
         <div style=${{ background: COLORS.card, border: "1px solid " + COLORS.border, borderRadius: 14, padding: "12px 14px", marginBottom: 14 }}>
-          <div style=${{ fontSize: 13, fontWeight: 700, marginBottom: 8, fontFamily: "'Zen Maru Gothic', sans-serif" }}>📷 紙カレンダーの写真から赤字日付を取り込む</div>
-          <input type="file" accept="image/*" capture="environment" onChange=${handlePhotoSelect} style=${{ fontSize: 12.5, width: "100%", marginBottom: 8 }} />
-          ${photoPreview && html`<img src=${photoPreview} style=${{ maxWidth: "100%", borderRadius: 8, marginBottom: 8, display: "block" }} />`}
+          <div style=${{ fontSize: 13, fontWeight: 700, marginBottom: 8, fontFamily: "'Zen Maru Gothic', sans-serif" }}>📅 表示する日付を絞り込む</div>
           <div style=${{ fontSize: 11.5, color: COLORS.inkMuted, marginBottom: 6 }}>
-            自動検出はまだ未接続です。写真を見て、赤字になっている日にちを下に入力してください（例: 3, 7, 15）
+            表示したい日にちだけを入力してください（例: 3, 7, 15）。空欄で「反映」すると全日程を表示します。
           </div>
           <div style=${{ display: "flex", gap: 6 }}>
             <input value=${redDaysInput} onChange=${(e) => setRedDaysInput(e.target.value)} placeholder="例: 3, 7, 15" style=${{ flex: 1, fontSize: 14, padding: "8px 10px", borderRadius: 8, border: "1px solid " + COLORS.border, minWidth: 0 }} />
             <button onClick=${applyRedDays} style=${{ padding: "8px 14px", borderRadius: 8, border: "none", background: COLORS.green, color: COLORS.greenText, fontSize: 13, fontWeight: 700, cursor: "pointer", whiteSpace: "nowrap" }}>反映</button>
           </div>
-          ${redDays.length > 0 && html`<div style=${{ fontSize: 12, color: COLORS.sunday, marginTop: 6 }}>🔴 ${redDays.join("日, ")}日 を日付欄に反映しました</div>`}
         </div>
 
         ${todayInPeriod && html`
@@ -314,7 +303,7 @@ function WateringApp() {
           <div style=${{ display: "grid", gridTemplateColumns: "44px 1fr 1fr", gap: 4, padding: "8px 8px", fontSize: 11, color: COLORS.inkMuted, borderBottom: "1px solid " + COLORS.border, background: "#FBFAF5" }}>
             <div>日付</div><div>予定者</div><div>実施者</div>
           </div>
-          ${dates.map((d) => {
+          ${(redDays.length > 0 ? dates.filter((d) => redDays.includes(d.getDate())) : dates).map((d) => {
             const key = dateKey(d);
             const isToday = key === todayKey;
             const wd = d.getDay();
@@ -322,11 +311,10 @@ function WateringApp() {
             const rec = records[key];
             const barColor = rec ? STATUS_COLOR[rec.status] : "transparent";
             const icon = eventIcon(d);
-            const isRedFlagged = redDays.includes(d.getDate());
             return html`
               <div key=${key} style=${{ display: "grid", gridTemplateColumns: "44px 1fr 1fr", gap: 4, alignItems: "center", padding: "8px 8px", borderBottom: "1px solid " + COLORS.border, borderLeft: "4px solid " + barColor, background: isToday ? "#F7FBF6" : "#fff" }}>
-                <div style=${{ fontSize: 12.5, color: isRedFlagged ? COLORS.sunday : wdColor, fontWeight: (isToday || isRedFlagged) ? 700 : 400, minWidth: 0 }}>
-                  ${isRedFlagged ? "🔴" : ""}${formatMD(d)}
+                <div style=${{ fontSize: 12.5, color: wdColor, fontWeight: isToday ? 700 : 400, minWidth: 0 }}>
+                  ${formatMD(d)}
                   <div style=${{ fontSize: 10, color: COLORS.inkMuted }}>(${WEEKDAYS[wd]})</div>
                   ${icon === "done" ? html`<div style=${{ fontSize: 12, marginTop: 2 }}>🪻🌻🌷</div>` : ""}
                   ${icon === "rain" ? html`<div style=${{ fontSize: 13, marginTop: 2 }}>☔</div>` : ""}
@@ -334,78 +322,4 @@ function WateringApp() {
                 <select style=${selectStyle} value=${getScheduleStaffId(d)} onChange=${(e) => setSchedule(d, e.target.value)}>
                   ${staffList.map((s) => html`<option key=${s.id} value=${s.id}>${staffOptionLabel(s)}</option>`)}
                 </select>
-                <select style=${selectStyle} value=${executorValue(d)} onChange=${(e) => handleExecutorChange(d, e.target.value)}>
-                  <option value="">（未実施）</option>
-                  ${staffList.map((s) => html`<option key=${s.id} value=${s.id}>${staffOptionLabel(s)}</option>`)}
-                  <option value="RAIN">☔ 雨延期</option>
-                </select>
-              </div>
-            `;
-          })}
-        </div>
-
-        <div style=${{ background: COLORS.card, border: "1px solid " + COLORS.border, borderRadius: 16, padding: "14px 16px", marginBottom: 16 }}>
-          <div style=${{ fontFamily: "'Zen Maru Gothic', sans-serif", fontWeight: 700, fontSize: 15, marginBottom: 10 }}>この期間の担当回数</div>
-          ${sortedCounts.length === 0
-            ? html`<div style=${{ fontSize: 13.5, color: COLORS.inkMuted }}>まだ記録がありません</div>`
-            : html`<div style=${{ display: "flex", flexDirection: "column", gap: 8 }}>
-                ${sortedCounts.map((s) => html`
-                  <div key=${s.id} style=${{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style=${{ width: 88, fontSize: 14 }}>${s.role === "DOCTOR" ? "🩺 Dr." : (s.name + "さん")}</div>
-                    <div style=${{ flex: 1, height: 10, borderRadius: 6, background: COLORS.greenSoft, overflow: "hidden" }}>
-                      <div style=${{ width: Math.min(100, (s.count / (sortedCounts[0].count || 1)) * 100) + "%", height: "100%", background: ROLE_COLOR[s.role] || COLORS.green }}></div>
-                    </div>
-                    <div style=${{ fontSize: 13.5, fontWeight: 700, width: 40, textAlign: "right" }}>${s.count}回</div>
-                  </div>
-                `)}
-              </div>`
-          }
-        </div>
-
-        <div style=${{ background: COLORS.card, border: "1px solid " + COLORS.border, borderRadius: 16, overflow: "hidden" }}>
-          <button onClick=${() => setStaffOpen((v) => !v)} style=${{ width: "100%", display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px", background: "none", border: "none", cursor: "pointer", fontSize: 15, fontWeight: 700, fontFamily: "'Zen Maru Gothic', sans-serif", color: COLORS.ink }}>
-            <span>職員管理</span> <span>${staffOpen ? "▲" : "▼"}</span>
-          </button>
-          ${staffOpen && html`
-            <div style=${{ padding: "0 16px 16px" }}>
-              ${staffList.map((s) => html`
-                <div key=${s.id} style=${{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid " + COLORS.border }}>
-                  <input
-                    value=${nameDraft[s.id] !== undefined ? nameDraft[s.id] : s.name}
-                    onChange=${(e) => setNameDraft((prev) => Object.assign({}, prev, { [s.id]: e.target.value }))}
-                    onBlur=${(e) => commitRename(s.id, e.target.value.trim() || s.name)}
-                    style=${{ flex: 1, minWidth: 0, boxSizing: "border-box", fontSize: 14.5, padding: "8px 10px", borderRadius: 8, border: "1px solid " + COLORS.border, minHeight: 40 }} />
-                  <select value=${s.role} onChange=${(e) => setStaffRole(s.id, e.target.value)} style=${{ flexShrink: 0, fontSize: 12, padding: "8px 4px", borderRadius: 8, border: "1px solid " + COLORS.border, background: ROLE_COLOR[s.role] || "#fff", color: COLORS.ink, cursor: "pointer" }}>
-                    ${ROLE_OPTIONS.map((r) => html`<option key=${r} value=${r}>${ROLE_LABEL[r]}</option>`)}
-                  </select>
-                  <button onClick=${() => removeStaff(s.id)} aria-label="削除" style=${{ flexShrink: 0, width: 40, height: 40, borderRadius: 8, border: "1px solid " + COLORS.border, background: "#fff", cursor: "pointer", color: COLORS.sunday, fontSize: 16 }}>🗑</button>
-                </div>
-              `)}
-              <div style=${{ marginTop: 12, display: "flex", flexDirection: "column", gap: 8 }}>
-                <input placeholder="新しい職員名" value=${newStaffName} onChange=${(e) => setNewStaffName(e.target.value)} style=${{ width: "100%", boxSizing: "border-box", fontSize: 14.5, padding: "8px 10px", borderRadius: 8, border: "1px solid " + COLORS.border, minHeight: 40, minWidth: 0 }} />
-                <div style=${{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <select value=${newStaffRole} onChange=${(e) => setNewStaffRole(e.target.value)} style=${{ fontSize: 13, padding: "8px 6px", borderRadius: 8, border: "1px solid " + COLORS.border, background: ROLE_COLOR[newStaffRole], color: COLORS.ink, cursor: "pointer" }}>
-                    ${ROLE_OPTIONS.map((r) => html`<option key=${r} value=${r}>${ROLE_LABEL[r]}</option>`)}
-                  </select>
-                  <button onClick=${addStaff} style=${{ marginLeft: "auto", flexShrink: 0, padding: "8px 16px", borderRadius: 8, border: "none", background: COLORS.green, color: COLORS.greenText, fontSize: 13, fontWeight: 700, cursor: "pointer" }}>＋ 追加</button>
-                </div>
-              </div>
-            </div>
-          `}
-        </div>
-
-      </div>
-    </div>
-  `;
-}
-
-try {
-  ReactDOM.createRoot(document.getElementById("root")).render(html`<${WateringApp} />`);
-} catch (err) {
-  const box = document.getElementById('error-box');
-  box.style.display = 'block';
-  box.textContent = '描画エラー:\n' + err;
-}
-</script>
-</body>
-</html>
+                <select
